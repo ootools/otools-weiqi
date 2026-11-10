@@ -1,21 +1,19 @@
 {
-  "devUrl": "http://127.0.0.1:6482",
-  "developerName": "your-name",
-  "displayName": "My Plugin",
-  "displayNameCN": "我的插件",
+  "uuid": "otools-weiqi",
+  "packid": "otools-weiqi",
+  "displayName": "Weiqi",
+  "displayNameCN": "围棋",
+  "developerName": "OTools",
+  "summary": "双人对弈 + 名局 SGF 排盘 + 交互式玩法介绍，从入门到复盘。",
+  "version": "0.1.0",
   "entry": "dist/index.html",
+  "devUrl": "http://127.0.0.1:6542",
   "quickDev": true,
   "hasAd": false,
-  "icon": "🧩",
   "inPluginPurchase": false,
-  "key": [
-    "my-plugin",
-    "插件"
-  ],
   "openInBrowser": false,
-  "packid": "otools-my-plugin",
+  "logo": "logo.svg",
+  "icon": "⚫",
   "screenshots": [],
-  "summary": "一句话描述这个插件做了什么（会展示在插件市场卡片上）。",
-  "uuid": "otools-my-plugin",
-  "version": "0.1.0"
+  "key": ["围棋", "围棋入门", "棋谱", "SGF", "排盘", "weiqi", "go", "baduk"]
 }

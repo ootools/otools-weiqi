@@ -3,21 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <title>My OTools Plugin</title>
+  <title>围棋 · OTools</title>
   <link rel="icon" type="image/svg+xml" href="../logo.svg">
-  <style>
-    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1b1d22; color: #e6e6e6;
-      font: 14px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
-    .wrap { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; box-sizing: border-box; }
-    h1 { margin: 0; font-size: 20px; font-weight: 600; }
-    p.tip { margin: 0; color: #9aa0a6; max-width: 520px; text-align: center; }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
-    button { background: #3b3f47; color: #e6e6e6; border: 1px solid #4a4f57; border-radius: 8px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
-    button:hover { background: #454a53; }
-    pre { background: #14161a; border: 1px solid #2a2d33; border-radius: 8px; padding: 12px 16px; max-width: 560px; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
-    .state { color: #7ee787; }
-    .state.bad { color: #ff7b72; }
-  </style>
+  <link rel="stylesheet" href="css/style.css">
   <script>
     /*
      * OTools 宿主桥（插件唯一需要写的 JS）。
@@ -27,9 +15,8 @@
      *   2. `window.__TAURI_INTERNALS__.invoke`：Tauri 原生 IPC（tools_webview_* 命令）。
      * 两条都不通（把 dist 拖进普通浏览器）就退回浏览器原生行为。
      *
-     * 这是「用户开发新插件」的最小可用示例：弹宿主文件对话框、读文件、写文件。
-     * 移植 Rust+WASM 软件时，这段桥通常写在 shell/index.html，Rust 侧通过 wasm-bindgen
-     * 调这里（见 shell/src/otools.rs）。
+     * 本插件用宿主桥实现 SGF 棋谱的导入（openText）与导出（saveText）；
+     * 普通浏览器里退化为 <input type=file> 与下载。
      */
     (function () {
       function base64ToBytes(b64) {
@@ -99,16 +86,16 @@
           return first ? (typeof first === 'string' ? first : (first.path || null)) : null;
         });
       }
-      function pickSavePath(defaultPath) {
+      function pickSavePath(defaultPath, filters) {
         var a = wrapper();
-        if (a) return a.dialog.save({ title: '保存文件', defaultPath: defaultPath, filters: [{ name: '文本', extensions: ['txt'] }] }).then(function (p) {
+        if (a) return a.dialog.save({ title: '保存文件', defaultPath: defaultPath, filters: filters || [{ name: '文本', extensions: ['txt'] }] }).then(function (p) {
           return (p && typeof p === 'string') ? p : (p && p.path ? p.path : null);
         });
         var invoke = tauriInvoke();
         if (!invoke) return fail('OTools 保存对话框不可用');
         var sp = String(defaultPath || '').match(/^(.*[\\/])?([^\\/]+)$/);
         return invoke('tools_webview_pick_save_path', {
-          options: { title: '保存文件', suggestedName: sp ? sp[2] : defaultPath, directory: sp ? sp[1].replace(/[\\/]+$/, '') : undefined, filters: [{ name: '文本', extensions: ['txt'] }] },
+          options: { title: '保存文件', suggestedName: sp ? sp[2] : defaultPath, directory: sp ? sp[1].replace(/[\\/]+$/, '') : undefined, filters: filters || [{ name: '文本', extensions: ['txt'] }] },
         }).then(function (meta) { return meta ? (typeof meta === 'string' ? meta : (meta.path || null)) : null; });
       }
 
@@ -139,51 +126,105 @@
             });
           });
         },
-        saveText: function (name, text) {
+        saveText: function (name, text, filters) {
           if (!hostReady()) return fail('OTools 保存对话框不可用');
-          return pickSavePath(name).then(function (path) {
+          return pickSavePath(name, filters).then(function (path) {
             if (!path) return null;
             return writeHostFile(path, bytesToBase64(new TextEncoder().encode(text))).then(function () { return path; });
           });
         },
       };
-
-      // ---- 下面只是示例 UI，演示怎么用上面的桥；删掉换成你自己的应用即可 ----
-      function setState(msg, bad) {
-        var el = document.getElementById('state');
-        el.textContent = msg;
-        el.className = 'state' + (bad ? ' bad' : '');
-      }
-      window.addEventListener('DOMContentLoaded', function () {
-        document.getElementById('open').addEventListener('click', function () {
-          window.otoolsPlugin.openText().then(function (r) {
-            if (!r) { setState('已取消'); return; }
-            document.getElementById('out').textContent = r.text;
-            setState('已打开：' + r.path);
-          }).catch(function (e) { setState('打开失败：' + e.message, true); });
-        });
-        document.getElementById('save').addEventListener('click', function () {
-          var text = document.getElementById('out').textContent || '';
-          window.otoolsPlugin.saveText('hello.txt', text).then(function (p) {
-            if (!p) { setState('已取消'); return; }
-            setState('已保存：' + p);
-          }).catch(function (e) { setState('保存失败：' + e.message, true); });
-        });
-        setState(window.otoolsPlugin.available() ? '运行在 OTools 宿主中' : '未检测到宿主（退回浏览器行为）');
-      });
     })();
   </script>
 </head>
 <body>
-  <div class="wrap">
-    <h1>My OTools Plugin</h1>
-    <p class="tip">这是 OTools 插件模板的最小示例：用宿主的文件对话框读写真实磁盘文件，无需任何前端打包步骤。把这段逻辑换成你的应用即可。</p>
-    <div class="row">
-      <button id="open">打开文件</button>
-      <button id="save">保存为…</button>
-    </div>
-    <pre id="out">在这里显示打开的文件内容…</pre>
-    <div id="state" class="state"></div>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><span class="brand-stone black"></span><span class="brand-stone white"></span>围棋 <span class="sub">OTools Weiqi</span></div>
+      <div class="topbar-right">对弈 · 排盘 · 学棋</div>
+    </header>
+    <main class="layout">
+      <section class="board-pane">
+        <div class="board-wrap"><canvas id="board"></canvas></div>
+        <div class="board-caption">
+          <span id="play-status" class="caption-main"></span>
+        </div>
+      </section>
+      <aside class="side">
+        <nav class="tabs">
+          <button id="tab-play" class="tab active">对弈</button>
+          <button id="tab-records" class="tab">排盘</button>
+          <button id="tab-learn" class="tab">学棋</button>
+        </nav>
+
+        <!-- 对弈 -->
+        <section id="panel-play" class="panel active">
+          <div class="row settings">
+            <label>棋盘 <select id="sel-size"><option value="19">19 路</option><option value="13">13 路</option><option value="9">9 路</option></select></label>
+            <label>贴目 <select id="sel-komi"><option value="7.5">7.5</option><option value="6.5">6.5</option><option value="5.5">5.5</option><option value="0">0</option></select></label>
+            <label>让子 <select id="sel-handicap"><option value="0">0</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option></select></label>
+            <button id="btn-new">新对局</button>
+          </div>
+          <div class="row actions">
+            <button id="btn-pass">虚手</button>
+            <button id="btn-undo">悔棋</button>
+            <button id="btn-redo">前进</button>
+            <span class="spacer"></span>
+            <button id="btn-import">导入 SGF</button>
+            <button id="btn-export">导出 SGF</button>
+          </div>
+          <div id="marking-box" class="marking hidden">
+            <div>双方连续虚手，进入<strong>死子标记</strong>阶段：点击棋子标记 / 取消死子。</div>
+            <div class="row">
+              <button id="btn-score-now">计算结果</button>
+              <button id="btn-skip-dead">跳过死子直接数子</button>
+              <button id="btn-resume">继续对局</button>
+            </div>
+          </div>
+          <div id="play-result" class="result hidden"></div>
+          <p class="hint">点击棋盘落子；最后一手有圆圈标记。对局自动保存在本地，下次打开继续。</p>
+        </section>
+
+        <!-- 排盘 -->
+        <section id="panel-records" class="panel">
+          <select id="sel-game" class="full"></select>
+          <div id="game-meta" class="meta"></div>
+          <div class="row replay-controls">
+            <button id="btn-first">首</button>
+            <button id="btn-prev">上一手</button>
+            <button id="btn-next">下一手</button>
+            <button id="btn-last">末</button>
+            <button id="btn-auto">自动播放</button>
+            <select id="sel-speed"><option value="slow">慢</option><option value="normal" selected>中</option><option value="fast">快</option></select>
+            <label class="chk"><input type="checkbox" id="chk-num">手数</label>
+          </div>
+          <div id="rec-movecount" class="movecount"></div>
+          <ol id="move-list" class="move-list"></ol>
+          <div id="rec-comment" class="comment"></div>
+          <div id="rec-load-error" class="load-error hidden"></div>
+        </section>
+
+        <!-- 学棋 -->
+        <section id="panel-learn" class="panel">
+          <div id="chapter-index" class="chapter-index"></div>
+          <div class="row chapter-nav">
+            <button id="btn-chapter-prev">上一章</button>
+            <span id="chapter-title" class="chapter-title"></span>
+            <button id="btn-chapter-next">下一章</button>
+          </div>
+          <div id="chapter-body" class="chapter-body"></div>
+          <div id="demo-notice" class="notice hidden"></div>
+          <div class="row demo-controls">
+            <button id="btn-demo-reset">重置演示</button>
+            <button id="btn-demo-next">下一步</button>
+            <span id="demo-caption" class="demo-caption"></span>
+          </div>
+        </section>
+      </aside>
+    </main>
   </div>
+  <input type="file" id="file-fallback" accept=".sgf,text/*" hidden>
+  <div id="toast" class="toast"></div>
+  <script type="module" src="js/ui/app.js"></script>
 </body>
 </html>

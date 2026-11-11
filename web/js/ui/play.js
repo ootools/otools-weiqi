@@ -1,9 +1,14 @@
 /**
  * 「对弈」tab 控制器：点击落子、虚手、悔棋/前进、死子标记与数子、
- * SGF 导入导出（宿主桥优先、浏览器退化）、localStorage 持久化。
+ * 人机对弈（电脑执黑/执白，思考中锁定落子）、SGF 导入导出（宿主桥优先、浏览器退化）、
+ * localStorage 持久化。
  */
 import { GoGame, BLACK, WHITE, EMPTY } from '../engine/go.js';
+import { chooseMove } from '../engine/go-ai.js';
 import { parseSGF, gameToSGF } from '../engine/sgf.js';
+
+const AI_LEVEL_NAMES = { easy: '入门', normal: '普通', hard: '困难' };
+const MODE_NAMES = { pvp: '双人对弈', 'ai-black': '人机 · AI 执黑', 'ai-white': '人机 · AI 执白' };
 
 const LS_KEY = 'otools-weiqi.play.v1';
 
@@ -15,6 +20,12 @@ export class PlayController {
   constructor(renderer) {
     this.renderer = renderer;
     this.game = new GoGame(19, 7.5, 0);
+    // 人机对弈状态
+    this.mode = 'pvp';        // pvp | ai-black | ai-white
+    this.aiLevel = 'normal';  // easy | normal | hard
+    this._thinking = false;   // AI 正在计算
+    this._aiTimer = null;     // 挂起的 AI 计算定时器
+    this._aiGen = 0;          // 局面代数：新对局/导入/切模式时递增，用于丢弃过期的 AI 计算
     this.el = {
       status: document.getElementById('play-status'),
       marking: document.getElementById('marking-box'),
@@ -31,6 +42,8 @@ export class PlayController {
       selSize: document.getElementById('sel-size'),
       selKomi: document.getElementById('sel-komi'),
       selHandicap: document.getElementById('sel-handicap'),
+      selMode: document.getElementById('sel-mode'),
+      selAiLevel: document.getElementById('sel-ai-level'),
       fileInput: document.getElementById('file-fallback'),
       toast: document.getElementById('toast'),
     };
@@ -42,24 +55,67 @@ export class PlayController {
     this.renderer.onClick = (x, y) => this.onCellClick(x, y);
     this.renderer.setSize(this.game.size);
     this._render();
+    // 恢复的对局若正轮到 AI，让其继续应手
+    this._maybeAIMove();
   }
 
   _wire() {
+    this.el.selMode.addEventListener('change', () => {
+      this._cancelAi();
+      this.mode = this.el.selMode.value;
+      this._persist();
+      this._render();
+      this._maybeAIMove();
+      this._toast(`已切换为${MODE_NAMES[this.mode] || this.mode}`);
+    });
+    this.el.selAiLevel.addEventListener('change', () => {
+      this.aiLevel = this.el.selAiLevel.value;
+      this._persist();
+      this._toast(`AI 难度：${AI_LEVEL_NAMES[this.aiLevel] || this.aiLevel}`);
+    });
     this.el.btnPass.addEventListener('click', () => {
+      if (this._aiTurnLocked()) {
+        this._toast('对手思考中，请稍候…');
+        return;
+      }
       const r = this.game.pass();
       if (!r.ok) this._toast(r.error);
       this._persist();
       this._render();
+      this._maybeAIMove();
     });
     this.el.btnUndo.addEventListener('click', () => {
-      if (!this.game.undo()) this._toast('没有可悔的棋');
+      if (this._thinking) {
+        this._toast('对手思考中，请稍候…');
+        return;
+      }
+      this._cancelAi();
+      const ai = this._aiColor();
+      let undone = 0;
+      if (this.game.undo()) {
+        undone++;
+        // 人机模式：悔棋一次撤 AI 应手 + 玩家上一手（共两手）
+        if (ai && this.game.turn === ai && this.game.canUndo) {
+          if (this.game.undo()) undone++;
+        }
+        this._toast(undone > 1 ? '已悔 2 手（AI 与你各一手）' : '已悔 1 手');
+      } else {
+        this._toast('没有可悔的棋');
+      }
       this._persist();
       this._render();
+      this._maybeAIMove();
     });
     this.el.btnRedo.addEventListener('click', () => {
+      if (this._thinking) {
+        this._toast('对手思考中，请稍候…');
+        return;
+      }
+      this._cancelAi();
       if (!this.game.redo()) this._toast('没有可前进的棋');
       this._persist();
       this._render();
+      this._maybeAIMove();
     });
     this.el.btnNew.addEventListener('click', () => {
       const size = Number(this.el.selSize.value);
@@ -69,10 +125,12 @@ export class PlayController {
         this._toast('让子棋黑贴 0，已自动将贴目设为 0');
         this.el.selKomi.value = '0';
       }
+      this._cancelAi();
       this.game = new GoGame(size, komi, handicap);
       this.renderer.setSize(size);
       this._persist();
       this._render();
+      this._maybeAIMove();
       this._toast(handicap > 0 ? `让 ${handicap} 子开局，白先行` : '新对局开始，黑先行');
     });
     this.el.btnScoreNow.addEventListener('click', () => {
@@ -80,6 +138,7 @@ export class PlayController {
       if (!f.ok) this._toast(f.error);
       this._persist();
       this._render();
+      this._maybeAIMove();
     });
     this.el.btnSkipDead.addEventListener('click', () => {
       const s = this.game.skipMarking();
@@ -90,12 +149,14 @@ export class PlayController {
       this.game.finalize();
       this._persist();
       this._render();
+      this._maybeAIMove();
     });
     this.el.btnResume.addEventListener('click', () => {
       const r = this.game.resumePlay();
       if (!r.ok) this._toast(r.error);
       this._persist();
       this._render();
+      this._maybeAIMove();
     });
     this.el.btnImport.addEventListener('click', () => this._import());
     this.el.btnExport.addEventListener('click', () => this._export());
@@ -113,6 +174,10 @@ export class PlayController {
 
   onCellClick(x, y) {
     const g = this.game;
+    if (this._aiTurnLocked()) {
+      this._toast('对手思考中，请稍候…');
+      return;
+    }
     if (g.phase === 'playing') {
       const r = g.play(x, y);
       if (!r.ok) {
@@ -125,6 +190,7 @@ export class PlayController {
       }
       this._persist();
       this._render();
+      this._maybeAIMove();
     } else if (g.phase === 'marking') {
       const r = g.toggleDead(x, y);
       if (!r.ok) this._toast(r.error);
@@ -134,6 +200,7 @@ export class PlayController {
 
   /** 导入 SGF 文本（宿主桥或浏览器路径最终都会走到这里） */
   loadSGFText(text, name) {
+    this._cancelAi();
     try {
       const rec = parseSGF(text);
       const g = new GoGame(rec.size, rec.komi, 0);
@@ -155,6 +222,7 @@ export class PlayController {
       if (rec.size !== 19) this.el.selSize.value = String(rec.size);
       this._persist();
       this._render();
+      this._maybeAIMove();
       this._toast(
         `已导入${name ? '：' + name : ''}（${rec.size} 路，${g.moveNumber} 手）` +
         (lastErr ? `；有 ${lastErr} 的手数被跳过` : ''),
@@ -221,7 +289,12 @@ export class PlayController {
     try {
       const meta = { black: '黑方', white: '白方' };
       const sgf = gameToSGF(this.game, meta);
-      localStorage.setItem(LS_KEY, JSON.stringify({ sgf, savedAt: Date.now() }));
+      localStorage.setItem(LS_KEY, JSON.stringify({
+        sgf,
+        savedAt: Date.now(),
+        mode: this.mode,
+        aiLevel: this.aiLevel,
+      }));
     } catch (e) {
       /* localStorage 不可用时忽略 */
     }
@@ -249,6 +322,15 @@ export class PlayController {
       }
       this.game = g;
       if (rec.size !== 19) this.el.selSize.value = String(rec.size);
+      // 恢复人机模式设置
+      if (data.mode === 'pvp' || data.mode === 'ai-black' || data.mode === 'ai-white') {
+        this.mode = data.mode;
+        if (this.el.selMode) this.el.selMode.value = data.mode;
+      }
+      if (data.aiLevel === 'easy' || data.aiLevel === 'normal' || data.aiLevel === 'hard') {
+        this.aiLevel = data.aiLevel;
+        if (this.el.selAiLevel) this.el.selAiLevel.value = data.aiLevel;
+      }
     } catch (e) {
       /* 恢复失败则忽略，使用新对局 */
     }
@@ -256,6 +338,10 @@ export class PlayController {
 
   _render() {
     const g = this.game;
+    const aiColor = this._aiColor();
+    const aiTurn = !!aiColor && g.phase === 'playing' && g.turn === aiColor;
+    // 人机模式：轮到 AI（含思考中）时锁定棋盘；死子标记阶段仍可点击标记
+    this.renderer.interactive = g.phase === 'playing' ? !(this._thinking || aiTurn) : true;
     this.renderer.setState({
       board: g.board,
       size: g.size,
@@ -264,23 +350,30 @@ export class PlayController {
     });
 
     // 状态条
-    const turnName = g.turn === BLACK ? '黑方' : '白方';
+    const turnName = aiColor
+      ? (g.turn === aiColor ? 'AI' : '你')
+      : (g.turn === BLACK ? '黑方' : '白方');
+    const aiLabel = aiColor
+      ? ` · AI（${AI_LEVEL_NAMES[this.aiLevel] || this.aiLevel}·执${aiColor === BLACK ? '黑' : '白'}）`
+      : '';
     let statusText;
     if (g.phase === 'over') {
       statusText = `对局结束 · ${g.result ? g.result.result : ''}`;
     } else if (g.phase === 'marking') {
       statusText = `第 ${g.moveNumber} 手 · 死子标记阶段（点击棋子标记死子）`;
     } else {
-      statusText = `第 ${g.moveNumber + 1} 手 · 轮到${turnName}` +
+      statusText = `第 ${g.moveNumber + 1} 手 · ` +
+        (aiTurn ? '对手思考中…' : `轮到${turnName}`) +
         (g.handicap > 0 && g.moveNumber === 0 ? '（让子棋白先行）' : '');
     }
     this.el.status.textContent =
       `${statusText} · 黑提 ${g.captures[BLACK]} / 白提 ${g.captures[WHITE]} · 贴 ${g.komi}` +
-      (g.handicap > 0 ? ` · 让 ${g.handicap} 子` : '');
+      (g.handicap > 0 ? ` · 让 ${g.handicap} 子` : '') + aiLabel;
 
     this.el.marking.classList.toggle('hidden', g.phase !== 'marking');
     this.el.btnUndo.disabled = !g.canUndo;
     this.el.btnRedo.disabled = !g.canRedo;
+    this.el.btnPass.disabled = aiTurn;
 
     // 结果面板
     if (g.phase === 'over' && g.result) {
@@ -300,6 +393,71 @@ export class PlayController {
       this.el.result.classList.add('hidden');
       this.el.result.innerHTML = '';
     }
+  }
+
+  /** 当前模式下 AI 执子颜色；双人对弈返回 null */
+  _aiColor() {
+    if (this.mode === 'ai-black') return BLACK;
+    if (this.mode === 'ai-white') return WHITE;
+    return null;
+  }
+
+  /** 轮到 AI（或 AI 正在思考）时锁定棋盘与虚手 */
+  _aiTurnLocked() {
+    const ai = this._aiColor();
+    return !!(ai && this.game.phase === 'playing' && (this._thinking || this.game.turn === ai));
+  }
+
+  /** 取消挂起的 AI 计算（新对局 / 导入 / 切换模式 / 悔棋前进时） */
+  _cancelAi() {
+    this._aiGen++;
+    if (this._aiTimer) {
+      clearTimeout(this._aiTimer);
+      this._aiTimer = null;
+    }
+    this._thinking = false;
+  }
+
+  /**
+   * 轮到 AI 时延迟约 50ms 计算着法并落子；期间显示「对手思考中…」并锁定落子。
+   * AI 虚手与玩家虚手走同一条双 pass 死子标记 / 数子流程。
+   */
+  _maybeAIMove() {
+    const ai = this._aiColor();
+    const g = this.game;
+    if (!ai || g.phase !== 'playing' || g.turn !== ai) {
+      this._thinking = false;
+      return;
+    }
+    if (this._thinking || this._aiTimer) return; // 已在计算
+    this._thinking = true;
+    const gen = this._aiGen;
+    this._render(); // 显示「对手思考中…」并锁盘
+    this._aiTimer = setTimeout(() => {
+      this._aiTimer = null;
+      if (gen !== this._aiGen || this.game !== g || g.phase !== 'playing' || g.turn !== ai) {
+        this._thinking = false;
+        this._render();
+        return;
+      }
+      let mv = 'pass';
+      try {
+        mv = chooseMove(g, ai, { level: this.aiLevel });
+      } catch (e) {
+        mv = 'pass'; // 引擎异常时兜底虚手，不中断对局
+      }
+      if (mv === 'pass') {
+        const r = g.pass();
+        if (r.ok) this._toast('AI 选择虚手');
+      } else {
+        const r = g.play(mv.x, mv.y);
+        if (r.ok && r.capturedCount > 0) this._toast(`AI 提子 ${r.capturedCount} 枚`);
+      }
+      this._thinking = false;
+      this._persist();
+      this._render();
+      this._maybeAIMove(); // 防御：正常情况下此时轮到玩家
+    }, 50);
   }
 
   _toast(msg) {

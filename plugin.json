@@ -4,8 +4,8 @@
   "displayName": "Weiqi",
   "displayNameCN": "围棋",
   "developerName": "OTools",
-  "summary": "双人对弈 + 名局 SGF 排盘 + 交互式玩法介绍，从入门到复盘。",
-  "version": "0.1.0",
+  "summary": "双人对弈 + 人机电脑对弈（入门陪练 AI）+ 名局 SGF 排盘 + 交互式玩法介绍，从入门到复盘。",
+  "version": "0.2.0",
   "entry": "dist/index.html",
   "devUrl": "http://127.0.0.1:6542",
   "quickDev": true,
@@ -15,5 +15,5 @@
   "logo": "logo.svg",
   "icon": "⚫",
   "screenshots": [],
-  "key": ["围棋", "围棋入门", "棋谱", "SGF", "排盘", "weiqi", "go", "baduk"]
+  "key": ["围棋", "围棋入门", "电脑对弈", "人机", "AI", "棋谱", "SGF", "排盘", "weiqi", "go", "baduk"]
 }

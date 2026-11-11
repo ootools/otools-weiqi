@@ -165,6 +165,18 @@
             <label>让子 <select id="sel-handicap"><option value="0">0</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option></select></label>
             <button id="btn-new">新对局</button>
           </div>
+          <div class="row settings">
+            <label>模式 <select id="sel-mode">
+              <option value="pvp" selected>双人对弈</option>
+              <option value="ai-black">人机 · AI 执黑</option>
+              <option value="ai-white">人机 · AI 执白</option>
+            </select></label>
+            <label>AI 难度 <select id="sel-ai-level">
+              <option value="easy">入门</option>
+              <option value="normal" selected>普通</option>
+              <option value="hard">困难</option>
+            </select></label>
+          </div>
           <div class="row actions">
             <button id="btn-pass">虚手</button>
             <button id="btn-undo">悔棋</button>
@@ -182,7 +194,7 @@
             </div>
           </div>
           <div id="play-result" class="result hidden"></div>
-          <p class="hint">点击棋盘落子；最后一手有圆圈标记。对局自动保存在本地，下次打开继续。</p>
+          <p class="hint">点击棋盘落子；最后一手有圆圈标记。人机模式下轮到 AI 时显示「对手思考中…」并锁定落子，悔棋一次撤回 AI 与你的两手；双方连续虚手后标记死子、数子定胜负。对局自动保存在本地，下次打开继续。</p>
         </section>
 
         <!-- 排盘 -->
